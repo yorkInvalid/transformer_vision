@@ -1,10 +1,25 @@
 /**
- * OverviewFlow 可视化组件的类型定义
+ * 可视化组件的类型定义
  */
 
 export interface Token {
     id: string;
     text: string;
+}
+
+/**
+ * Attention 张量：三维数组 [heads][seqLen][seqLen]
+ */
+export type AttentionTensor = number[][][];
+
+/**
+ * Hover cell 信息
+ */
+export interface HoverCell {
+    i: number; // 行索引
+    j: number; // 列索引
+    value: number; // attention 值
+    head: number; // head 索引
 }
 
 export interface FlowNode {
