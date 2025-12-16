@@ -1,6 +1,13 @@
 <script lang="ts">
-  import { appState } from '../state/index';
+  import { appState, inferenceStore, performanceMetrics } from '../state/index';
   import { onMount } from 'svelte';
+  import {
+    initInferenceService,
+    loadModel,
+    generateNextToken,
+    tokenizer,
+  } from '../model/inferenceService';
+  import { get } from 'svelte/store';
 
   const examples = [
     { label: 'Example 1: Simple prompt', value: 'The quick brown fox' },
@@ -12,6 +19,8 @@
   let isDropdownOpen = false;
   let dropdownButton: HTMLButtonElement;
   let dropdownMenu: HTMLDivElement;
+  let errorMessage: string | null = null;
+  let errorTimeout: number | null = null;
 
   function handleExampleSelect(value: string) {
     appState.update((s) => ({ ...s, inputText: value }));
@@ -19,10 +28,59 @@
     isDropdownOpen = false;
   }
 
-  function handleGenerate() {
-    // Generate action will be handled by parent or store
-    console.log('Generate clicked', appState);
+  async function handleGenerate() {
+    const state = get(inferenceStore);
+    const app = get(appState);
+
+    // Clear previous error
+    errorMessage = null;
+    if (errorTimeout) {
+      clearTimeout(errorTimeout);
+    }
+
+    // Check if model is loaded
+    if (!state.session) {
+      // Load model first
+      try {
+        await loadModel(undefined, '/', true);
+      } catch (error) {
+        errorMessage = error instanceof Error ? error.message : 'Failed to load model';
+        errorTimeout = setTimeout(() => {
+          errorMessage = null;
+        }, 5000);
+        return;
+      }
+    }
+
+    // Check if already generating
+    if (state.isGenerating) {
+      return;
+    }
+
+    // Generate next token
+    try {
+      const inputText = app.inputText || '';
+      const tokenId = await generateNextToken(
+        inputText,
+        app.temperature,
+        app.samplingMode,
+        app.topK,
+        app.topP
+      );
+
+      // Decode token and append to output
+      const tokenText = tokenizer.decodeToken(tokenId);
+      inferenceActions.appendToken(tokenId, tokenText);
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : 'Generation failed';
+      errorTimeout = setTimeout(() => {
+        errorMessage = null;
+      }, 5000);
+    }
   }
+
+  // Import inferenceActions
+  import { inferenceActions } from '../state/inferenceStore';
 
   function handleClickOutside(event: MouseEvent) {
     if (
@@ -36,9 +94,15 @@
   }
 
   onMount(() => {
+    // Initialize inference service
+    initInferenceService('/');
+
     document.addEventListener('click', handleClickOutside);
     return () => {
       document.removeEventListener('click', handleClickOutside);
+      if (errorTimeout) {
+        clearTimeout(errorTimeout);
+      }
     };
   });
 </script>
@@ -107,18 +171,33 @@
       <!-- Generate Button -->
       <button
         type="button"
-        class="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/50 active:bg-sky-700"
+        class="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/50 active:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
         onclick={handleGenerate}
+        disabled={$inferenceStore.isLoading || $inferenceStore.isGenerating}
       >
-        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M13 10V3L4 14h7v7l9-11h-7z"
-          />
-        </svg>
-        Generate
+        {#if $inferenceStore.isLoading}
+          <svg class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Loading...
+        {:else if $inferenceStore.isGenerating}
+          <svg class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Generating...
+        {:else}
+          <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M13 10V3L4 14h7v7l9-11h-7z"
+            />
+          </svg>
+          Generate
+        {/if}
       </button>
     </div>
 
@@ -195,5 +274,63 @@
         </div>
       {/if}
     </div>
+
+    <!-- Status Bar: EP, Timing, Error -->
+    <div class="flex flex-wrap items-center gap-4 text-xs text-slate-400">
+      <!-- Execution Provider -->
+      {#if $performanceMetrics.executionProvider}
+        <div class="flex items-center gap-1.5">
+          <span class="font-medium">EP:</span>
+          <span class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-200">
+            {$performanceMetrics.executionProvider}
+          </span>
+        </div>
+      {/if}
+
+      <!-- Model Load Time -->
+      {#if $performanceMetrics.modelLoadTime !== null}
+        <div class="flex items-center gap-1.5">
+          <span>Load:</span>
+          <span class="font-mono text-slate-300">
+            {$performanceMetrics.modelLoadTime.toFixed(0)}ms
+          </span>
+        </div>
+      {/if}
+
+      <!-- Last Inference Time -->
+      {#if $performanceMetrics.lastInferenceTime !== null}
+        <div class="flex items-center gap-1.5">
+          <span>Inference:</span>
+          <span class="font-mono text-slate-300">
+            {$performanceMetrics.lastInferenceTime.toFixed(0)}ms
+          </span>
+        </div>
+      {/if}
+
+      <!-- Error Message -->
+      {#if errorMessage || $inferenceStore.error}
+        <div class="flex items-center gap-1.5 text-red-400">
+          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+            />
+          </svg>
+          <span>{errorMessage || $inferenceStore.error?.message || 'Error'}</span>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Output Text Display -->
+    {#if $inferenceStore.outputText}
+      <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+        <div class="mb-1 text-xs font-medium text-slate-400">Generated Output:</div>
+        <div class="text-sm text-slate-200 whitespace-pre-wrap break-words">
+          {$inferenceStore.outputText}
+        </div>
+      </div>
+    {/if}
   </div>
 </header>
