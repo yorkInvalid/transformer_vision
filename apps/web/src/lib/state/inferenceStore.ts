@@ -5,6 +5,7 @@
 import { writable, derived } from 'svelte/store';
 import type { SessionInfo } from '../model/session';
 import type { ModelLoadError, EPNotSupportedError, InferenceError } from '../model/errors';
+import type { GPT2Tokenizer, TokenWithOffset } from '../model/tokenizer';
 
 export interface InferenceState {
   // Session state
@@ -12,10 +13,16 @@ export interface InferenceState {
   isLoading: boolean;
   error: ModelLoadError | EPNotSupportedError | InferenceError | null;
 
+  // Tokenizer state
+  tokenizer: GPT2Tokenizer | null;
+  isTokenizerLoading: boolean;
+  tokenizerError: Error | null;
+
   // Generation state
   isGenerating: boolean;
   outputText: string;
   generatedTokens: number[];
+  inputTokens: TokenWithOffset[]; // Tokens from input text
 
   // Performance metrics
   modelLoadTimeMs: number | null;
@@ -27,9 +34,13 @@ const initialState: InferenceState = {
   session: null,
   isLoading: false,
   error: null,
+  tokenizer: null,
+  isTokenizerLoading: false,
+  tokenizerError: null,
   isGenerating: false,
   outputText: '',
   generatedTokens: [],
+  inputTokens: [],
   modelLoadTimeMs: null,
   lastInferenceTimeMs: null,
   totalInferenceTimeMs: 0,
@@ -114,6 +125,38 @@ export const inferenceActions = {
       ...state,
       lastInferenceTimeMs: timeMs,
       totalInferenceTimeMs: state.totalInferenceTimeMs + timeMs,
+    }));
+  },
+
+  setTokenizer(tokenizer: GPT2Tokenizer) {
+    inferenceStore.update((state) => ({
+      ...state,
+      tokenizer,
+      isTokenizerLoading: false,
+      tokenizerError: null,
+    }));
+  },
+
+  setTokenizerLoading(loading: boolean) {
+    inferenceStore.update((state) => ({
+      ...state,
+      isTokenizerLoading: loading,
+      tokenizerError: loading ? null : state.tokenizerError,
+    }));
+  },
+
+  setTokenizerError(error: Error) {
+    inferenceStore.update((state) => ({
+      ...state,
+      tokenizerError: error,
+      isTokenizerLoading: false,
+    }));
+  },
+
+  setInputTokens(tokens: TokenWithOffset[]) {
+    inferenceStore.update((state) => ({
+      ...state,
+      inputTokens: tokens,
     }));
   },
 

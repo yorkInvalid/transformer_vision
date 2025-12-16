@@ -1,44 +1,78 @@
 /**
  * Model configuration
  * Centralized configuration for model paths and tensor names
+ * Supports environment variables for flexible deployment
  */
 
 /**
- * Get model URL
- * Supports local static files and future CDN URLs
- * @param modelPath - Relative path from static/ or full URL
+ * Get model URL from environment variable or default
+ * Supports:
+ * - VITE_MODEL_URL: Full URL or relative path
+ * - VITE_MODEL_VERSION: Version string for cache busting
  * @param basePath - App base path (for GitHub Pages deployment)
  */
-export function getModelUrl(modelPath: string, basePath: string = '/'): string {
-  // If it's already a full URL, return as-is
-  if (modelPath.startsWith('http://') || modelPath.startsWith('https://')) {
-    return modelPath;
+export function getModelUrl(basePath: string = '/'): string {
+  // Check environment variable first
+  const envModelUrl = import.meta.env.VITE_MODEL_URL;
+  if (envModelUrl) {
+    // If it's already a full URL, return as-is
+    if (envModelUrl.startsWith('http://') || envModelUrl.startsWith('https://')) {
+      return envModelUrl;
+    }
+    // Otherwise treat as relative path
+    const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+    const normalizedModelPath = envModelUrl.startsWith('/') ? envModelUrl.slice(1) : envModelUrl;
+    return `${normalizedBase}${normalizedModelPath}`;
   }
 
-  // Normalize base path
+  // Fallback to default path
+  const defaultPath = 'models/gpt2/model.onnx';
   const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+  return `${normalizedBase}${defaultPath}`;
+}
 
-  // Remove leading slash from modelPath if present
-  const normalizedModelPath = modelPath.startsWith('/') ? modelPath.slice(1) : modelPath;
+/**
+ * Get model version from environment variable or default
+ */
+export function getModelVersion(): string {
+  return import.meta.env.VITE_MODEL_VERSION || '1.0.0';
+}
 
-  // For now, assume models are in static/models/
-  // In production, this could be a CDN URL
-  return `${normalizedBase}${normalizedModelPath}`;
+/**
+ * Get tokenizer base URL
+ */
+export function getTokenizerBaseUrl(basePath: string = '/'): string {
+  const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+  return normalizedBase;
 }
 
 /**
  * Default model configuration
- * TODO: Replace with actual model path when model is available
  * 
  * Note: Vite serves files from the 'public' directory at the root path.
- * So 'models/demo/model.onnx' in public/ becomes '/models/demo/model.onnx' at runtime.
+ * So 'models/gpt2/model.onnx' in public/ becomes '/models/gpt2/model.onnx' at runtime.
  */
 export const DEFAULT_MODEL_CONFIG = {
-  // Placeholder path - replace with actual model path
-  // This path is relative to the public/ directory
-  modelPath: 'models/demo/model.onnx',
+  // Model path is now resolved via getModelUrl()
   inputName: 'input_ids', // Common names: 'input_ids', 'input', 'ids'
   outputName: 'logits', // Common names: 'logits', 'output', 'output_logits'
   preferWebGPU: true,
+};
+
+/**
+ * Default tokenizer configuration
+ */
+export const DEFAULT_TOKENIZER_CONFIG = {
+  // Option 1: Use vocab.json + merges.txt
+  vocabPath: 'models/gpt2/vocab.json',
+  mergesPath: 'models/gpt2/merges.txt',
+
+  // Option 2: Use tokenizer.json (alternative)
+  // If provided, vocabPath and mergesPath will be ignored
+  tokenizerPath: undefined as string | undefined,
+
+  // Loader options
+  useCacheStorage: true,
+  cacheVersion: '1',
 };
 

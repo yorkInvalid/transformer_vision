@@ -1,12 +1,13 @@
 <script lang="ts">
   import { appState, inferenceStore, performanceMetrics } from '../state/index';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import {
-    initInferenceService,
-    loadModel,
-    generateNextToken,
-    tokenizer,
-  } from '../model/inferenceService';
+    initInferenceWorkerService,
+    loadModelWorker,
+    generateNextTokenWorker,
+    cleanupWorker,
+  } from '../model/inferenceWorkerService';
+  import { modelStore } from '../state/modelStore';
   import { get } from 'svelte/store';
 
   const examples = [
@@ -30,6 +31,7 @@
 
   async function handleGenerate() {
     const state = get(inferenceStore);
+    const modelState = get(modelStore);
     const app = get(appState);
 
     // Clear previous error
@@ -38,11 +40,20 @@
       clearTimeout(errorTimeout);
     }
 
-    // Check if model is loaded
-    if (!state.session) {
-      // Load model first
+    // Check if tokenizer is loaded
+    if (!state.tokenizer) {
+      errorMessage = 'Tokenizer not loaded. Please wait...';
+      errorTimeout = setTimeout(() => {
+        errorMessage = null;
+      }, 5000);
+      return;
+    }
+
+    // Check if model is ready
+    if (modelState.sessionStatus !== 'ready') {
+      // Try to load model
       try {
-        await loadModel(undefined, '/', true);
+        await loadModelWorker('/', true);
       } catch (error) {
         errorMessage = error instanceof Error ? error.message : 'Failed to load model';
         errorTimeout = setTimeout(() => {
@@ -53,14 +64,14 @@
     }
 
     // Check if already generating
-    if (state.isGenerating) {
+    if (modelState.isInferring || state.isGenerating) {
       return;
     }
 
     // Generate next token
     try {
       const inputText = app.inputText || '';
-      const tokenId = await generateNextToken(
+      const tokenId = await generateNextTokenWorker(
         inputText,
         app.temperature,
         app.samplingMode,
@@ -69,8 +80,11 @@
       );
 
       // Decode token and append to output
-      const tokenText = tokenizer.decodeToken(tokenId);
-      inferenceActions.appendToken(tokenId, tokenText);
+      const tokenizer = state.tokenizer;
+      if (tokenizer) {
+        const tokenText = tokenizer.decodeToken(tokenId);
+        inferenceActions.appendToken(tokenId, tokenText);
+      }
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'Generation failed';
       errorTimeout = setTimeout(() => {
@@ -93,17 +107,24 @@
     }
   }
 
-  onMount(() => {
-    // Initialize inference service
-    initInferenceService('/');
+  onMount(async () => {
+    // Initialize inference service with Worker
+    try {
+      await initInferenceWorkerService('/');
+    } catch (error) {
+      console.error('Failed to initialize inference service:', error);
+      // Error will be shown in UI via tokenizerError state
+    }
 
     document.addEventListener('click', handleClickOutside);
-    return () => {
-      document.removeEventListener('click', handleClickOutside);
-      if (errorTimeout) {
-        clearTimeout(errorTimeout);
-      }
-    };
+  });
+
+  onDestroy(() => {
+    document.removeEventListener('click', handleClickOutside);
+    if (errorTimeout) {
+      clearTimeout(errorTimeout);
+    }
+    cleanupWorker();
   });
 </script>
 
@@ -307,8 +328,19 @@
         </div>
       {/if}
 
+      <!-- Tokenizer Status -->
+      {#if $inferenceStore.isTokenizerLoading}
+        <div class="flex items-center gap-1.5 text-slate-400">
+          <svg class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <span>Loading tokenizer...</span>
+        </div>
+      {/if}
+
       <!-- Error Message -->
-      {#if errorMessage || $inferenceStore.error}
+      {#if errorMessage || $inferenceStore.error || $inferenceStore.tokenizerError}
         <div class="flex items-center gap-1.5 text-red-400">
           <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path
@@ -318,10 +350,32 @@
               d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-          <span>{errorMessage || $inferenceStore.error?.message || 'Error'}</span>
+          <span>
+            {errorMessage || 
+             $inferenceStore.error?.message || 
+             $inferenceStore.tokenizerError?.message || 
+             'Error'}
+          </span>
         </div>
       {/if}
     </div>
+
+    <!-- Input Tokens Display -->
+    {#if $inferenceStore.inputTokens.length > 0}
+      <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+        <div class="mb-2 text-xs font-medium text-slate-400">Input Tokens ({$inferenceStore.inputTokens.length}):</div>
+        <div class="flex flex-wrap gap-1">
+          {#each $inferenceStore.inputTokens as token}
+            <span
+              class="rounded px-1.5 py-0.5 text-xs font-mono text-slate-300 bg-slate-800 hover:bg-slate-700 cursor-pointer"
+              title="ID: {token.id}, Range: [{token.start}, {token.end})"
+            >
+              {token.text || ' '}
+            </span>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- Output Text Display -->
     {#if $inferenceStore.outputText}

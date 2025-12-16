@@ -9,6 +9,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true
+  },
+  worker: {
+    format: 'es'
+  },
+  build: {
+    target: 'esnext',
+    sourcemap: false
   }
 });
 

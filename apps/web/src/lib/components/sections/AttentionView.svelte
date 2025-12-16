@@ -1,21 +1,63 @@
 <script lang="ts">
   import AttentionMatrix from '../AttentionMatrix.svelte';
   import type { Token, AttentionTensor } from '../../viz/types';
+  import { modelStore } from '../../state/modelStore';
+  import { get } from 'svelte/store';
 
-  // Placeholder data for Attention section
-  const attentionData = {
-    numHeads: 12,
-    sequenceLength: 4,
-    tokens: ['The', 'quick', 'brown', 'fox'],
-    attentionMatrix: [
-      [1.0, 0.3, 0.1, 0.05],
-      [0.2, 1.0, 0.4, 0.1],
-      [0.1, 0.3, 1.0, 0.2],
-      [0.05, 0.1, 0.3, 1.0]
-    ]
-  };
+  // Convert activations to AttentionTensor format
+  function activationsToTensor(activations: any, layerIndex: number, numHeads: number, seqLen: number): AttentionTensor | null {
+    const layer = activations.layers.find((l: any) => l.layerIndex === layerIndex);
+    if (!layer || !layer.attnProbs) {
+      return null;
+    }
 
-  // Demo data for AttentionMatrix (16 tokens, 12 heads)
+    // attnProbs shape: [num_heads, seq_len, seq_len] or [batch, num_heads, seq_len, seq_len]
+    const attnData = layer.attnProbs;
+    const tensor: AttentionTensor = [];
+
+    // Handle different shapes
+    if (attnData.length === numHeads * seqLen * seqLen) {
+      // Flattened array: [num_heads * seq_len * seq_len]
+      for (let h = 0; h < numHeads; h++) {
+        const headMatrix: number[][] = [];
+        for (let i = 0; i < seqLen; i++) {
+          const row: number[] = [];
+          for (let j = 0; j < seqLen; j++) {
+            const idx = h * seqLen * seqLen + i * seqLen + j;
+            row.push(attnData[idx]);
+          }
+          headMatrix.push(row);
+        }
+        tensor.push(headMatrix);
+      }
+    } else {
+      // Already in correct format (shouldn't happen with Float32Array, but handle it)
+      console.warn('Unexpected attnProbs format');
+      return null;
+    }
+
+    return tensor;
+  }
+
+  // Get tokens and attention data from modelStore
+  $: lastResult = $modelStore.lastResult;
+  $: tokens = (lastResult?.tokens || []) as Token[];
+  $: attentionTensor = lastResult?.activations
+    ? (() => {
+        const numHeads = 12; // Default, should be inferred from model
+        const seqLen = tokens.length;
+        if (seqLen === 0) return null;
+        
+        // Try to get the last layer's activations
+        const layers = lastResult.activations.layers;
+        if (layers.length === 0) return null;
+        
+        const lastLayerIndex = layers[layers.length - 1].layerIndex;
+        return activationsToTensor(lastResult.activations, lastLayerIndex, numHeads, seqLen);
+      })()
+    : null as AttentionTensor | null;
+
+  // Fallback to demo data if no real data
   const demoTokens: Token[] = [
     { id: 't0', text: 'The' },
     { id: 't1', text: 'quick' },
@@ -25,53 +67,38 @@
     { id: 't5', text: 'over' },
     { id: 't6', text: 'the' },
     { id: 't7', text: 'lazy' },
-    { id: 't8', text: 'dog' },
-    { id: 't9', text: 'and' },
-    { id: 't10', text: 'runs' },
-    { id: 't11', text: 'through' },
-    { id: 't12', text: 'the' },
-    { id: 't13', text: 'forest' },
-    { id: 't14', text: 'with' },
-    { id: 't15', text: 'joy' }
+    { id: 't8', text: 'dog' }
   ];
 
-  // 生成假数据：构造有结构的 attention pattern
   function generateAttentionTensor(numHeads: number, seqLen: number): AttentionTensor {
     const tensor: AttentionTensor = [];
-
     for (let h = 0; h < numHeads; h++) {
       const headMatrix: number[][] = [];
-
       for (let i = 0; i < seqLen; i++) {
         const row: number[] = [];
         for (let j = 0; j < seqLen; j++) {
           let value: number;
-
-          // 构造不同的 attention pattern（每个 head 略有不同）
           if (i === j) {
-            // 对角线（自注意力）总是较高
             value = 0.8 + Math.random() * 0.2;
           } else {
-            // 根据距离和 head 索引生成不同的模式
             const distance = Math.abs(i - j);
             const baseValue = Math.exp(-distance / (seqLen / 2));
             const headBias = Math.sin((h * Math.PI) / numHeads) * 0.3;
             value = baseValue * (0.3 + Math.random() * 0.4) + headBias;
-            value = Math.max(0, Math.min(1, value)); // 限制在 [0, 1]
+            value = Math.max(0, Math.min(1, value));
           }
-
           row.push(value);
         }
         headMatrix.push(row);
       }
-
       tensor.push(headMatrix);
     }
-
     return tensor;
   }
 
-  const demoAttentionTensor: AttentionTensor = generateAttentionTensor(12, demoTokens.length);
+  $: displayTokens = tokens.length > 0 ? tokens : demoTokens;
+  $: displayTensor = attentionTensor || generateAttentionTensor(12, displayTokens.length);
+  $: hasRealData = attentionTensor !== null;
 </script>
 
 <section id="attention" class="scroll-mt-20">
@@ -82,6 +109,15 @@
         Attention mechanisms allow the model to focus on different parts of the input sequence,
         computing relationships between all token pairs.
       </p>
+      {#if !hasRealData}
+        <div class="mt-2 rounded-lg border border-yellow-800 bg-yellow-900/20 px-3 py-2 text-sm text-yellow-200">
+          ⚠️ Showing demo data. Run inference to see real attention patterns.
+        </div>
+      {:else}
+        <div class="mt-2 rounded-lg border border-green-800 bg-green-900/20 px-3 py-2 text-sm text-green-200">
+          ✓ Showing real attention data from model inference.
+        </div>
+      {/if}
     </div>
 
     <!-- Attention Matrix Visualization (Canvas) -->
@@ -94,50 +130,12 @@
       </p>
       <div class="min-h-[500px]">
         <AttentionMatrix
-          tokens={demoTokens}
-          attn={demoAttentionTensor}
+          tokens={displayTokens}
+          attn={displayTensor}
           initialHead={0}
           showValuesOnHover={true}
         />
       </div>
-    </div>
-
-    <!-- Legacy HTML Table Visualization (保留作为对比) -->
-    <div class="mb-6 rounded-xl border border-slate-800 bg-slate-900/60 p-6">
-      <h3 class="mb-4 text-lg font-semibold text-slate-50">
-        Attention Weights Matrix (Table View)
-      </h3>
-      <div class="overflow-x-auto">
-        <div class="inline-block min-w-full">
-          <!-- Header row -->
-          <div class="mb-2 flex">
-            <div class="w-20 flex-shrink-0" />
-            {#each attentionData.tokens as token}
-              <div class="flex-1 text-center text-xs font-medium text-slate-400">{token}</div>
-            {/each}
-          </div>
-          <!-- Matrix rows -->
-          {#each attentionData.attentionMatrix as row, i}
-            <div class="mb-1 flex items-center">
-              <div class="w-20 flex-shrink-0 text-xs font-medium text-slate-400">
-                {attentionData.tokens[i]}
-              </div>
-              {#each row as weight, j}
-                <div
-                  class="flex-1 rounded border border-slate-700 bg-slate-800 p-2 text-center text-xs font-mono"
-                  style="background-color: rgba(56, 189, 248, {weight});"
-                >
-                  {weight.toFixed(2)}
-                </div>
-              {/each}
-            </div>
-          {/each}
-        </div>
-      </div>
-      <p class="mt-4 text-xs text-slate-400">
-        Each cell represents the attention weight from one token (row) to another (column). Higher
-        values indicate stronger attention.
-      </p>
     </div>
 
     <!-- Multi-Head Explanation -->
@@ -145,11 +143,11 @@
       <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
         <h3 class="mb-3 text-lg font-semibold text-slate-50">Attention Heads</h3>
         <p class="mb-4 text-sm text-slate-300">
-          This model uses {attentionData.numHeads} parallel attention heads, each learning different aspects
+          This model uses {displayTensor.length} parallel attention heads, each learning different aspects
           of relationships between tokens.
         </p>
         <div class="flex flex-wrap gap-2">
-          {#each Array(attentionData.numHeads) as _, i}
+          {#each Array(displayTensor.length) as _, i}
             <div
               class="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300"
             >

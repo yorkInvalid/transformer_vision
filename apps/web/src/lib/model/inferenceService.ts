@@ -12,79 +12,55 @@ import {
   sampleFromProbs,
 } from './sampling';
 import { inferenceActions } from '../state/inferenceStore';
-import { getModelUrl, DEFAULT_MODEL_CONFIG } from './config';
+import { getModelUrl, DEFAULT_MODEL_CONFIG, DEFAULT_TOKENIZER_CONFIG } from './config';
 import type { ModelLoadError, EPNotSupportedError, InferenceError } from './errors';
-
-/**
- * Simple tokenizer placeholder
- * In production, this should use the actual tokenizer (e.g., from transformers.js or custom)
- * For now, we'll use a simple character-level or word-level tokenizer
- */
-export class SimpleTokenizer {
-  private vocab: Map<string, number> = new Map();
-  private reverseVocab: Map<number, string> = new Map();
-  private nextId = 0;
-
-  constructor() {
-    // Initialize with basic ASCII characters and common tokens
-    // This is a placeholder - replace with actual tokenizer
-    this.addToken('<pad>');
-    this.addToken('<unk>');
-    this.addToken('<bos>');
-    this.addToken('<eos>');
-    
-    // Add ASCII printable characters
-    for (let i = 32; i < 127; i++) {
-      this.addToken(String.fromCharCode(i));
-    }
-  }
-
-  private addToken(token: string): number {
-    if (!this.vocab.has(token)) {
-      const id = this.nextId++;
-      this.vocab.set(token, id);
-      this.reverseVocab.set(id, token);
-      return id;
-    }
-    return this.vocab.get(token)!;
-  }
-
-  encode(text: string): number[] {
-    // Simple character-level encoding
-    // In production, use proper tokenizer
-    const tokens: number[] = [];
-    for (const char of text) {
-      const id = this.vocab.get(char) ?? this.vocab.get('<unk>') ?? 0;
-      tokens.push(id);
-    }
-    return tokens;
-  }
-
-  decode(tokenIds: number[]): string {
-    return tokenIds
-      .map((id) => this.reverseVocab.get(id) ?? '<unk>')
-      .join('');
-  }
-
-  decodeToken(tokenId: number): string {
-    return this.reverseVocab.get(tokenId) ?? '<unk>';
-  }
-
-  getVocabSize(): number {
-    return this.vocab.size;
-  }
-}
-
-// Global tokenizer instance (placeholder)
-// TODO: Replace with actual tokenizer from model
-export const tokenizer = new SimpleTokenizer();
+import { initTokenizer, type GPT2Tokenizer } from './tokenizer';
+import { get } from 'svelte/store';
+import { inferenceStore } from '../state/inferenceStore';
 
 /**
  * Initialize inference service
- * Sets up ORT environment
+ * Sets up ORT environment and loads tokenizer
  */
 export function initInferenceService(basePath: string = '/'): void {
   initOrtEnv(basePath);
+}
+
+/**
+ * Load tokenizer
+ * @param basePath - App base path
+ * @param vocabPath - Path to vocab.json (optional)
+ * @param mergesPath - Path to merges.txt (optional)
+ * @param tokenizerPath - Path to tokenizer.json (optional, alternative)
+ */
+export async function loadTokenizer(
+  basePath: string = '/',
+  vocabPath?: string,
+  mergesPath?: string,
+  tokenizerPath?: string
+): Promise<void> {
+  inferenceActions.setTokenizerLoading(true);
+
+  try {
+    const config = {
+      baseUrl: basePath,
+      useCacheStorage: DEFAULT_TOKENIZER_CONFIG.useCacheStorage,
+      cacheVersion: DEFAULT_TOKENIZER_CONFIG.cacheVersion,
+    };
+
+    const tokenizer = await initTokenizer(
+      config,
+      vocabPath || DEFAULT_TOKENIZER_CONFIG.vocabPath,
+      mergesPath || DEFAULT_TOKENIZER_CONFIG.mergesPath,
+      tokenizerPath || DEFAULT_TOKENIZER_CONFIG.tokenizerPath
+    );
+
+    inferenceActions.setTokenizer(tokenizer);
+  } catch (error) {
+    const errorObj = error instanceof Error ? error : new Error('Failed to load tokenizer');
+    inferenceActions.setTokenizerError(errorObj);
+    throw errorObj;
+  }
 }
 
 /**
@@ -158,8 +134,18 @@ export async function generateNextToken(
   const startTime = performance.now();
 
   try {
+    // Get tokenizer from store
+    const tokenizer = state.tokenizer;
+    if (!tokenizer) {
+      throw new InferenceError('Tokenizer not loaded. Please load tokenizer first.');
+    }
+
     // Encode input text to token IDs
     const inputIds = tokenizer.encode(inputText);
+    
+    // Store input tokens with offsets for visualization
+    const inputTokens = tokenizer.tokenizeWithOffsets(inputText);
+    inferenceActions.setInputTokens(inputTokens);
 
     // Run inference to get logits
     const logits = await runLogits(currentSession.session, inputIds, {
@@ -199,7 +185,4 @@ export async function generateNextToken(
   }
 }
 
-// Import inferenceStore to access current state
-import { get } from 'svelte/store';
-import { inferenceStore } from '../state/inferenceStore';
 
